@@ -1,0 +1,15 @@
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+
+numpy==1.26.4
+scipy==1.17.0
+sentence-transformers==5.2.2
+tokenizers==0.22.2
+tqdm==4.67.2
+chromadb==1.4.1
+gradio==6.5.1
+pdfplumber==0.11.9
+faster-whisper==1.2.1
+pillow==12.1.0
+pytesseract==0.3.13
+pdf2image==1.17.0
+llama-cpp-python==0.2.11
