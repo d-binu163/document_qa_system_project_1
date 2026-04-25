@@ -8,7 +8,7 @@ from sentence_transformers import SentenceTransformer           # For Embedding
 import chromadb                                                 # Vector Database
 from faster_whisper import WhisperModel                         # For Speech -> Text
 import numpy as np                                              # For cacheing
-from TTS.api import TTS                                         # For Text -> Speech
+# from TTS.api import TTS                                         # For Text -> Speech. Off by default.
 from llama_cpp import Llama                                     # For base model
 from collections import deque                                   # For cache dequeing
 import uuid                                                     # For naming database collection
@@ -47,11 +47,11 @@ if not os.path.exists(BASE_MODEL):
     raise FileNotFoundError(f"Missing model file:\n{BASE_MODEL}")
 llm = Llama(model_path=BASE_MODEL, n_ctx=4096, n_gpu_layers=-1 if CUDA_AVAILABLE else 0, n_threads=os.cpu_count() or 4, n_batch=512 if CUDA_AVAILABLE else 128)
 llm_lock = threading.Lock()
-ENABLE_TTS = True
+ENABLE_TTS = False
 ENABLE_WHISPER = True
 whisper = WhisperModel("base", device="cuda" if CUDA_AVAILABLE else "cpu", compute_type="float16" if CUDA_AVAILABLE else "int8") if ENABLE_WHISPER else None
 tts = TTS("tts_models/en/ljspeech/tacotron2-DDC", gpu=CUDA_AVAILABLE) if ENABLE_TTS else None
-SIMILARITY_THRESHOLD = 0.35
+SIMILARITY_THRESHOLD = 1.5
 CACHE_THRESHOLD = 0.2
 MAX_CACHE_SIZE = 750
 ERROR_MESSAGE = (
@@ -72,12 +72,16 @@ def normalize(vec):
 def extract_text(pdf_file) -> str:
     text_chunks = []
     with pdfplumber.open(pdf_file.name) as pdf:
+        num_pages = len(pdf.pages)
         for page in pdf.pages:
             text = page.extract_text()
             if text and text.strip():
                 text_chunks.append(text)
     extracted_text = "\n".join(text_chunks)
-    if not extracted_text.strip():
+    
+    # If pdfplumber got less than ~50 chars per page on average, treat it
+    # as a scanned PDF and use OCR instead.
+    if len(extracted_text.strip()) < num_pages * 50:
         ocr_text = ocr_pdf(pdf_file.name)
         if ocr_text.strip():
             return ocr_text
@@ -108,7 +112,7 @@ def clean_text(text):
     text = re.sub(r'Page\s*\d+(\s*of\s*\d+)?', '', text, flags=re.IGNORECASE)       # Remove page numbers like "Page 3","3 | Page", etc.
     text = re.sub(r'\b\d+\s*\|\s*Page\b', '', text, flags=re.IGNORECASE)            # - Same as before.
     text = re.sub(r'\n?\s*\d+\s*\n', '\n', text)                                    # Remove standalone numbers (mostly page numbers).
-    text = text.lower()                                                             # Make all text lowercased.
+    # text = text.lower()  # all-mpnet-base-v2 works better with proper case.       # Make all text lowercased.
     text = re.sub(r'[^\w\s.,;:!?()\-\n/@:%+]', '', text)                            # Keep useful Special Characters and Remove useless ones.
     cleaned_text = re.sub(r'\s+', ' ', text)                                        # Normalize spaces.
 
@@ -146,6 +150,13 @@ def process_pdf(pdf_file):
         return "No readable text found in PDF."
     chunks = chunk_text(cleaned_text)
     vector_space(chunks, collection)
+
+    print("=" * 60)
+    print(f"EXTRACTED TEXT LENGTH: {len(cleaned_text)} chars")
+    print("FIRST 1500 CHARS OF EXTRACTED TEXT:")
+    print(cleaned_text[:1500])
+    print("=" * 60)
+
     cache_q.clear()
     cache_a.clear()
     return "Document processed successfully"
@@ -170,7 +181,7 @@ def transcribe(audio_path):
 # Retrieving chunks
 def retrieving_chunks(query, collection):
     query_embedding = normalize(embedding.encode(query)).tolist()
-    results = collection.query(query_embeddings=[query_embedding], n_results=3, include=['documents', 'distances'])
+    results = collection.query(query_embeddings=[query_embedding], n_results=5, include=['documents', 'distances'])
     docs = results["documents"][0]
     distances = results["distances"][0]
     if not docs or all(d > SIMILARITY_THRESHOLD for d in distances):
